@@ -13,12 +13,30 @@ using Vector3 = Microsoft.Xna.Framework.Vector3;
 using Vector4 = Microsoft.Xna.Framework.Vector4;
 namespace AITesting
 {
+
+    /* To do:
+     * =Loss function was hitting zero, yet it was unable to deal with the targets in any way at all
+     * Further: It was saying that the loss function was 0, but there was a distinct 3 value difference
+     * 
+     * I'm going to "learn" after every gradient descent instead of after cummulating all the values. Hopefully it'll make the changes more accurate
+     * Just because you could get stuck over and under estimated in equal portions and it would just say "No changes" and all that
+     * 
+     * Multiply reward by absolute velocity - prioritise speed
+     * pass in a relative location to the target along with the target's location
+     * 
+     * The target moves to a spot in the opposite direction to the Ai's current direction, in increasing distances
+     */
     public class Game1 : Game
     {
         private GraphicsDeviceManager _graphics;
         private SpriteBatch _spriteBatch;
 
         SpriteFont ariel;
+        SpriteFont arielSmall;
+
+        private Matrix worldMatrix, viewMatrix, projectionMatrix;
+        private BasicEffect basicEffect;
+
 
         WorldContext worldContext;
 
@@ -28,7 +46,11 @@ namespace AITesting
         Texture2D collisionSprite;
         Texture2D redTexture;
 
-        double timeSpeedupConstant = 3;
+        double timeSpeedupConstant = 9;
+
+        double viewModeCooldown = 0;
+        double maxViewModeCooldown = 1;
+        bool viewGraph = false;
 
         int tickCount = 0;
         public Game1()
@@ -40,13 +62,18 @@ namespace AITesting
             worldContext = new WorldContext();
 
             this.IsFixedTimeStep = true;
-            this.TargetElapsedTime = TimeSpan.FromSeconds(1/180d);
+            this.TargetElapsedTime = TimeSpan.FromSeconds(1/360d);
         }
 
 
         protected override void Initialize()
         {
             // TODO: Add your initialization logic here
+
+            worldMatrix = Matrix.Identity;
+            viewMatrix = Matrix.CreateLookAt(new Vector3(0, 0, 1), Vector3.Zero, Vector3.Up);
+
+            projectionMatrix = Matrix.CreateOrthographicOffCenter(0, 1, 1, 0, 0, 1);
 
             base.Initialize();
         }
@@ -57,6 +84,14 @@ namespace AITesting
             entityTexture = new Texture2D(GraphicsDevice, 1, 1);
             entityTexture.SetData<Color>(new Color[] {Color.Black});
 
+            basicEffect = new BasicEffect(_graphics.GraphicsDevice);
+            basicEffect.World = worldMatrix;
+            basicEffect.View = viewMatrix;
+            basicEffect.Projection = projectionMatrix;
+
+            basicEffect.VertexColorEnabled = true;
+            basicEffect.LightingEnabled = false;
+
             collisionSprite = new Texture2D(GraphicsDevice, 1, 1);
             collisionSprite.SetData<Color>(new Color[] {Color.Green});
 
@@ -66,6 +101,7 @@ namespace AITesting
             blockTextures = Texture2D.FromFile(GraphicsDevice, AppDomain.CurrentDomain.BaseDirectory + "Content\\blockSpriteSheet.png") ;
 
             ariel = Content.Load<SpriteFont>("Ariel");
+            arielSmall = Content.Load<SpriteFont>("ArielSmall");
             // TODO: use this.Content to load your game content here
         }
 
@@ -76,8 +112,22 @@ namespace AITesting
 
             updateEntity(gameTime);
             updatePhysicsObjects(gameTime);
+            updateViewMode(gameTime);
 
             base.Update(gameTime);
+        }
+
+        public void updateViewMode(GameTime gameTime) {
+            if (viewModeCooldown > 0) {
+                viewModeCooldown -= gameTime.ElapsedGameTime.TotalSeconds;
+            } else
+            {
+                if (Keyboard.GetState().IsKeyDown(Keys.M)) {
+                    viewGraph = !viewGraph;
+                    viewModeCooldown = maxViewModeCooldown;
+                }
+
+            }
         }
 
         public void updatePhysicsObjects(GameTime gameTime)
@@ -109,24 +159,30 @@ namespace AITesting
         }
 
         public void updateEntity(GameTime gameTime) {
-            tickCount++;
-            if (tickCount > 3)
-            {
                 worldContext.controlledEntity.onInput(gameTime);
-                tickCount = 0;
-            }
-            
         }
 
         protected override void Draw(GameTime gameTime)
         {
             GraphicsDevice.Clear(Color.CornflowerBlue);
+            if (viewGraph)
+            {
+                drawGraph();
+            }
 
             _spriteBatch.Begin(samplerState: SamplerState.PointClamp);
-            drawBlocks();
-            drawEntities();
+            if (!viewGraph)
+            {
+                drawBlocks();
+                drawEntities();
+            }
+            if (viewGraph)
+            {
+                drawRewards();
+            }
             //drawCollisionBox();
             _spriteBatch.End();
+
 
             base.Draw(gameTime);
         }
@@ -174,16 +230,26 @@ namespace AITesting
             //draw the epsilon value:
             if (worldContext.physicsObjects[0] is AiEntity firstEntity) {
                 _spriteBatch.DrawString(ariel, (Math.Truncate(firstEntity.greedyEpsilon * 100) / 100).ToString(), new Vector2(36,0), Color.Blue);
-                _spriteBatch.DrawString(ariel, (Math.Truncate(firstEntity.reward * 100) / 100).ToString() + " | " + firstEntity.hitTargetReward, new Vector2(36, 50), Color.Blue);
-                _spriteBatch.DrawString(ariel, (Math.Truncate(firstEntity.maxEstimatedReward * 100) / 100).ToString(), new Vector2(36,70), Color.Blue);
+                _spriteBatch.DrawString(ariel, (Math.Truncate((firstEntity.reward) * 100) / 100).ToString() + " | " + firstEntity.hitTargetReward, new Vector2(36, 50), Color.Blue);
+                _spriteBatch.DrawString(ariel, (Math.Truncate(firstEntity.maxEstimatedReward * 100) / 100).ToString() + " | " + (Math.Sign(firstEntity.maxEstimatedReward) == Math.Sign(firstEntity.reward)), new Vector2(36,70), Color.Blue);
                 _spriteBatch.DrawString(ariel, firstEntity.actionIndex.ToString(), new Vector2(36, 90), Color.Blue);
                 _spriteBatch.DrawString(ariel, firstEntity.samples.Count.ToString(), new Vector2(36, 110), Color.Blue);
+
+                if (firstEntity.samples.Count > 0)
+                {
+                    for (int i = 0; i < firstEntity.samples[firstEntity.samples.Count - 1].output.GetLength(1); i++)
+                    {
+                        _spriteBatch.DrawString(ariel, (Math.Truncate(firstEntity.samples[firstEntity.samples.Count - 1].output[0,i] * 100) / 100).ToString(), new Vector2(100 + 80 * i, 0), Color.Blue);
+                    }
+                }
 
 
                 _spriteBatch.DrawString(ariel, firstEntity.era.ToString(), new Vector2(_graphics.PreferredBackBufferWidth - 32, 0), Color.Blue);
 
             }
         }
+
+        
 
         public void drawCollisionBox()
         {
@@ -215,7 +281,92 @@ namespace AITesting
             }
         }
 
+        public void drawRewards() {
+            if (worldContext.physicsObjects[0] is AiEntity firstEntity)
+            {
+                
+                
+                _spriteBatch.DrawString(ariel, (Math.Truncate((firstEntity.lastSampleReward) * 100) / 100).ToString() , new Vector2(_graphics.PreferredBackBufferWidth - 60, 50), Color.Blue);
+                _spriteBatch.DrawString(ariel, (Math.Truncate(firstEntity.lastSampleEstimatedReward * 100) / 100).ToString(), new Vector2(_graphics.PreferredBackBufferWidth - 60, 70), Color.Blue);
 
+                List<(int era, double loss, double rewardDifference, double estimatedReward)> cl = firstEntity.neuralNet.critic.criticLossDatapoints;
+
+                if (cl.Count > 0)
+                {
+                    _spriteBatch.DrawString(ariel, (Math.Truncate(cl[cl.Count - 1].estimatedReward * 100) / 100).ToString(), new Vector2(_graphics.PreferredBackBufferWidth - 60, 90), Color.Blue);
+                    int horizontalPixelsPerDatapoint = _graphics.PreferredBackBufferWidth / cl.Count;
+                    double verticalMax = (_graphics.PreferredBackBufferHeight - 50) / firstEntity.neuralNet.critic.maxLoss;
+
+
+
+                    for (int i = 0; i < cl.Count; i++)
+                    {
+                        float xLoc = (i * horizontalPixelsPerDatapoint);
+                        float yLoc = -12 + _graphics.PreferredBackBufferHeight - (float)(verticalMax * cl[i].loss);
+
+                        if(Mouse.GetState().X > xLoc - horizontalPixelsPerDatapoint/2 && Mouse.GetState().X < xLoc + horizontalPixelsPerDatapoint/2 && Mouse.GetState().Y > yLoc - 30 && Mouse.GetState().Y < yLoc + 30)
+                        _spriteBatch.DrawString(arielSmall, (Math.Truncate((cl[i].rewardDifference) * 10) / 10).ToString(), new Vector2(xLoc, yLoc), Color.Blue);
+                    }
+                }
+            }
+        }
+
+        public void drawGraph() {
+            RasterizerState rasterizerState1 = new RasterizerState();
+            rasterizerState1.CullMode = CullMode.None;
+            GraphicsDevice.RasterizerState = rasterizerState1;
+
+            drawLoss();
+
+
+        }
+        public void drawLoss() {
+            if (worldContext.physicsObjects[0] is AiEntity a) {
+                //draw a line between consecutive points:
+                
+
+                
+                if (a.neuralNet.critic.criticLossDatapoints.Count > 1)
+                {
+
+                    List<(int era, double loss, double rewardDifference, double estimatedReward)> cl = a.neuralNet.critic.criticLossDatapoints;
+                    VertexPositionColorTexture[] line = new VertexPositionColorTexture[cl.Count];
+                    int[] ind = new int[cl.Count];
+                    for (int i = 0; i < ind.Length; i++) {
+                        ind[i] = i;
+                    }
+
+                    int horizontalPixelsPerDatapoint = _graphics.PreferredBackBufferWidth / cl.Count;
+                    double verticalMax = (_graphics.PreferredBackBufferHeight - 50) / a.neuralNet.critic.maxLoss;
+
+
+                    //I should just do x = i * horizontalPixelsPerDatapoint and the y is just _graphics.height + verticalMax * lossValue
+                    for (int i = 0; i < cl.Count; i++)
+                    {
+                        line[i].Position = new Vector3((i * horizontalPixelsPerDatapoint)/(float)_graphics.PreferredBackBufferWidth, 1 - (float)(verticalMax * cl[i].loss)/(float)_graphics.PreferredBackBufferHeight, 0f);
+                        line[i].Color = Color.Red;
+                        line[i].TextureCoordinate = new Vector2(0f,0f);
+                    }
+                        foreach (EffectPass pass in basicEffect.CurrentTechnique.Passes)
+                        {
+                            pass.Apply();
+
+                            GraphicsDevice.DrawUserIndexedPrimitives(
+                                PrimitiveType.LineStrip,
+                                line,
+                                0,
+                                line.Length,
+                                ind,
+                                0,
+                                line.Length - 1
+                            );
+                        }
+                    
+                    
+                }
+                
+            }
+        }
     }
 
 
@@ -540,6 +691,10 @@ namespace AITesting
         public double x;
         public double y;
 
+        public double distance = 30;
+        public double defaultDistance = 30;
+        public double distanceIncrease = 1.5;
+
         public Target() {
             x = 300;
             y = 200;
@@ -557,6 +712,15 @@ namespace AITesting
             }
             
         }
+
+        public void newLocation(double x, double velocityX) {
+            this.x = -Math.Sign(velocityX) * distance + x;
+
+            if(this.x < 40) { this.x = 40; }
+            else if( this.x > 500) { this.x = 500; }
+
+            distance *= distanceIncrease;
+        }
     }
     public class AiEntity : PhysicsObject {
 
@@ -565,24 +729,45 @@ namespace AITesting
         public double priorReward;
 
         public Target t = new Target();
-        NeuralNet neuralNet;
+        public NeuralNet neuralNet;
         int tickCount = 0;
         double maxUpdateDuration = 0.01;
         double updateDuration;
 
-        double maxEraDuration = 1.5;
+        double maxEraDuration = 5;
         double eraDuration;
 
         public double greedyEpsilon = 1;
-        double greedyEpslionDecay = 0.98;
+        double greedyEpslionDecay = 0.995;
 
         public double hitTargetReward = 0;
 
+        public Vector2 distanceFromTarget = Vector2.Zero;
+
+        double xWeight = 1;
+        double yWeight = 1;
+
+        //An array that contains the reward for moving towards or away from the target for both x and y
+        double[] positiveNegativeMovementRewards = new double[] {5, -1, 0, 0};
 
 
         public double actionIndex;
         public double maxEstimatedReward;
-        public int era;
+        public int era = 1;
+
+        public double lastSampleReward;
+        public double lastSampleEstimatedReward;
+
+        public double greedyEpsilonDuration;
+        public double maxGreedyEpsilonDuration = 0.05;
+        public double greedyEpsilonDurationDecay = 0.999;
+        public int greedyEpsilonOutput;
+
+        public bool aiControl = true;
+        public double maxControlCooldown = 0.1;
+        public double controlCooldown = 0;
+
+        public double[,] neuralNetOutput;
 
         double distanceRewardConst = 3000; //Large because the distance in pixels is typically massive
         public AiEntity(WorldContext worldContext) : base(worldContext) {
@@ -607,7 +792,10 @@ namespace AITesting
             height = 2;
             //inputs: x, y, velocityX, velocityY, accelerationX, accelerationY
             //6 inputs, 4 in the first hidden layer, 3 in the output
-            neuralNet = new NeuralNet(new int[] {8, 15,15, 15, 2});
+            int[] neuralNetLayers = new int[] { 11, 15, 15, 2 };
+            neuralNet = new NeuralNet(neuralNetLayers, NeuralNetCostFunction.AdvantageCost, NodeLayerActivationFunction.softmax, NodeLayerActivationFunction.relu);
+            neuralNet.createOfflineNeuralNet(neuralNetLayers);
+            neuralNet.createCriticNeuralNet(new int[] { 11,15, 15, 15, 1});
 
             collider = new Rectangle(0, 0, (int)(width * worldContext.pixelsPerBlock), (int)(height * worldContext.pixelsPerBlock));
 
@@ -620,36 +808,261 @@ namespace AITesting
             base.updateLocation(xChange, yChange);
 
 
-            reward = distanceRewardConst / Math.Pow(Math.Pow(t.x - x, 2) + Math.Pow(t.y - y, 2), 0.5) + hitTargetReward;
+            //reward = distanceRewardConst / Math.Pow(Math.Pow(t.x - x, 2) * xWeight + Math.Pow(t.y - y, 2) * yWeight, 0.5) + hitTargetReward;
 
-            if (x >= t.x - 10 && x <= t.x + 10)
+            //If the x difference now is less than it was, the entity is rewarded for moving closer
+            //Cummulate all the rewards over the entire duration of the sample, but reduce them according to how long the duration is
+            if (aiControl)
             {
-                t.randomiseLocation();
-                hitTargetReward += 50;
-            }
+                double newReward = 0;
+                if (Math.Abs(t.x - x) <= distanceFromTarget.X)
+                {
+                    newReward += positiveNegativeMovementRewards[0] * maxUpdateDuration;
+                }
+                else
+                {
+                    newReward += positiveNegativeMovementRewards[1] * maxUpdateDuration;
+                }
+                distanceFromTarget.X = (float)Math.Abs(t.x - x);
 
-            if (samples.Count > 2)
-            {
+                if (Math.Abs(t.y - y) <= distanceFromTarget.Y)
+                {
+                    newReward += positiveNegativeMovementRewards[2] * maxUpdateDuration;
+                }
+                else
+                {
+                    newReward += positiveNegativeMovementRewards[3] * maxUpdateDuration;
+                }
 
-                samples[samples.Count - 1].rewardChange = reward - priorReward;
+                newReward *= Math.Abs(velocityX);
 
+                reward += newReward;
 
+                distanceFromTarget.Y = (float)Math.Abs(t.y - y);
+
+                if (!isOnGround)
+                {
+                    //reward -= 0.03;
+                }
+
+                if (x >= t.x - 10 && x <= t.x + 10)
+                {
+                    t.newLocation(x, velocityX);
+                    reward += 50;
+                }
+
+                if (samples.Count > 2)
+                {
+                    samples[samples.Count - 1].rewardChange = reward;// - priorReward;
+                }
             }
         }
 
         public void onInput(GameTime gameTime) {
-            if (eraDuration >= 0)
+            if (controlCooldown < 0)
             {
-         
+                if (Keyboard.GetState().IsKeyDown(Keys.G))
+                {
+                    aiControl = !aiControl;
+                    controlCooldown = maxControlCooldown;
+                }
+            }
+            else {
+                controlCooldown -= gameTime.ElapsedGameTime.TotalSeconds;
+            }
 
-                //My current issue is that the AI is only aware of the immediate difference and cannot see very far into the future. So I do need to re-add all that in
-                //Now that I've seen that the model can learn to do something
-                //It's predictions got very very far off track near the end intruigingly
+            if (aiControl)
+            {
+                if (eraDuration >= 0 && y < 2000)
+                {
 
-                eraDuration -= gameTime.ElapsedGameTime.TotalSeconds;
-                //calculate neural net output
-                //Then act based on that
-                double[,] input = new double[1, 8];
+
+                    eraDuration -= gameTime.ElapsedGameTime.TotalSeconds;
+                    //calculate neural net output
+                    //Then act based on that
+                    double[,] input = new double[1, 11];
+                    input[0, 0] = ((x / (worldContext.pixelsPerBlock)) * worldContext.engineController.physicsEngine.blockSizeInMeters);
+                    input[0, 1] = ((y / (worldContext.pixelsPerBlock)) * worldContext.engineController.physicsEngine.blockSizeInMeters);
+                    input[0, 2] = velocityX;
+                    input[0, 3] = velocityY;
+                    input[0, 4] = accelerationX;
+                    input[0, 5] = accelerationY;
+                    input[0, 6] = ((t.x / (worldContext.pixelsPerBlock)) * worldContext.engineController.physicsEngine.blockSizeInMeters);
+                    input[0, 7] = ((t.y / (worldContext.pixelsPerBlock)) * worldContext.engineController.physicsEngine.blockSizeInMeters);
+                    input[0, 8] = ((t.x / (worldContext.pixelsPerBlock)) * worldContext.engineController.physicsEngine.blockSizeInMeters) - ((x / (worldContext.pixelsPerBlock)) * worldContext.engineController.physicsEngine.blockSizeInMeters);
+                    input[0, 9] = ((t.y / (worldContext.pixelsPerBlock)) * worldContext.engineController.physicsEngine.blockSizeInMeters) - ((y / (worldContext.pixelsPerBlock)) * worldContext.engineController.physicsEngine.blockSizeInMeters);
+                    input[0, 10] = Convert.ToInt32(isOnGround);
+                    neuralNetOutput = neuralNet.calculateNeuralNet(input);
+
+
+                    double maxValue = 0;
+                    int maxValueIndex = 0;
+
+                    for (int i = 0; i < neuralNetOutput.GetLength(1); i++)
+                    {
+                        if (maxValue < neuralNetOutput[0, i])
+                        {
+                            maxValueIndex = i;
+                        }
+                    }
+
+
+                    //Calculate greedy epsilon:
+                    Random r = new Random();
+
+                    if (r.NextDouble() < greedyEpsilon && greedyEpsilonDuration <= 0)
+                    {
+                        //Set a random action
+                        maxValueIndex = r.Next(0, neuralNetOutput.GetLength(1));
+                        greedyEpsilonDuration = maxGreedyEpsilonDuration;
+                        greedyEpsilonOutput = maxValueIndex;
+                    }
+
+                    if (greedyEpsilonDuration > 0)
+                    {
+                        greedyEpsilonDuration -= gameTime.ElapsedGameTime.TotalSeconds;
+                        maxValueIndex = greedyEpsilonOutput;
+                    }
+
+                    maxValue = neuralNetOutput[0, maxValueIndex];
+
+                    actionIndex = maxValueIndex;
+
+                    if ((maxValueIndex == 0 || Keyboard.GetState().IsKeyDown(Keys.D)) && !Keyboard.GetState().IsKeyDown(Keys.A))
+                    {
+                        //Move right
+                        accelerationX += 75;
+                        actionIndex = 0;
+                    }
+                    if ((maxValueIndex == 1 || Keyboard.GetState().IsKeyDown(Keys.A)) && !Keyboard.GetState().IsKeyDown(Keys.D))
+                    {
+                        //Move left
+                        accelerationX -= 75;
+                        actionIndex = 1;
+                    }
+                    if ((maxValueIndex == 2 || Keyboard.GetState().IsKeyDown(Keys.W)) && isOnGround)
+                    {
+                        accelerationY += 1 / gameTime.ElapsedGameTime.TotalSeconds;
+                        actionIndex = 2;
+                    }
+
+                    maxEstimatedReward = neuralNet.critic.calculateNeuralNet(input)[0, 0];
+
+
+
+
+                    //Instead, take a sample every 1 second
+
+                    if (greedyEpsilon < 0.1)
+                    {
+                        greedyEpsilon = 0.005;
+                    }
+
+                    if (updateDuration <= 0)
+                    {
+
+                        //At a certain point: Stop learning
+                        //Q-Learning:
+                        //The neural net predicts a linear output that corrosponds to the estimated reward from that action: Eg. 40 points for moving left, 20 from moving right
+                        //You store a record of samples through out an era. You take the input and the output of the neural net. The reward recieved from that input (eg. difference between t & t + 1)
+                        //I'll need to store/update some temporary values I guess.
+                        //With each sample, update the gradient descent thing using the current reward as the expected reward.
+                        Sample currentSample = new Sample();
+                        currentSample.state = input;
+                        currentSample.output = neuralNetOutput;
+                        currentSample.rewardChange = reward;
+                        currentSample.actionIndex = maxValueIndex;
+
+                        //Adjust the previous sample with the current reward difference
+                        if (samples.Count > 0)
+                        {
+                            //samples[samples.Count - 1].rewardChange = reward - samples[samples.Count - 1].rewardChange;
+                            if (samples[samples.Count - 1].rewardChange < 0)
+                            {
+                                //So evidently going left has been found to decrease the reward! SO now what
+                            }
+                            //The most recent sample in the sample list has the same input as the currentSample. That makes sense
+                            samples[samples.Count - 1].nextState = input;
+                        }
+
+                        //priorReward = reward;
+                        reward = 0;
+                        hitTargetReward = 0;
+
+
+                        samples.Add(currentSample);
+
+                        updateDuration = maxUpdateDuration;
+                    }
+                    else
+                    {
+                        updateDuration -= gameTime.ElapsedGameTime.TotalSeconds;
+
+                    }
+                }
+                else
+                {
+                    greedyEpsilon *= greedyEpslionDecay;
+                    maxGreedyEpsilonDuration *= greedyEpsilonDurationDecay;
+                    era += 1;
+
+
+                    //What I'll do, is just update but using the methods, ignoring the samples
+
+
+
+
+                    //The era ended: Compute all of the gradient changes and such:
+                    //Ignore the last sample as it has incomplete information
+
+                    //After every era, update the offline neural net to equal the current one
+
+                    lastSampleReward = samples[samples.Count - 2].rewardChange;
+                    lastSampleEstimatedReward = neuralNet.critic.calculateNeuralNet(samples[samples.Count - 2].state)[0, 0];
+
+
+                    neuralNet.updateFromSampleList(samples, era);
+                    //neuralNet.learn(samples.Count);
+                    //neuralNet.critic.learn(samples.Count);
+                    neuralNet.updateOfflineNeuralNet();
+
+                    //Reset the agent's location:
+                    t.x = 300;
+                    t.distance = t.defaultDistance;
+                    x = 200;
+                    y = 0;
+                    velocityX = 0;
+                    velocityY = 0;
+                    accelerationY = 0;
+                    accelerationX = 0;
+
+                    eraDuration = maxEraDuration;
+                    samples.Clear();
+
+                    t.randomiseLocation();
+                }
+            }
+            else
+            {
+                if ((Keyboard.GetState().IsKeyDown(Keys.D)) && !Keyboard.GetState().IsKeyDown(Keys.A))
+                {
+                    //Move right
+                    accelerationX += 75;
+                    actionIndex = 0;
+                }
+                if ((Keyboard.GetState().IsKeyDown(Keys.A)) && !Keyboard.GetState().IsKeyDown(Keys.D))
+                {
+                    //Move left
+                    accelerationX -= 75;
+                    actionIndex = 1;
+                }
+                if ((Keyboard.GetState().IsKeyDown(Keys.W)) && isOnGround)
+                {
+                    accelerationY += 1 / gameTime.ElapsedGameTime.TotalSeconds;
+                    actionIndex = 2;
+                }
+
+                double[,] input = new double[1, 11];
                 input[0, 0] = ((x / (worldContext.pixelsPerBlock)) * worldContext.engineController.physicsEngine.blockSizeInMeters);
                 input[0, 1] = ((y / (worldContext.pixelsPerBlock)) * worldContext.engineController.physicsEngine.blockSizeInMeters);
                 input[0, 2] = velocityX;
@@ -657,133 +1070,12 @@ namespace AITesting
                 input[0, 4] = accelerationX;
                 input[0, 5] = accelerationY;
                 input[0, 6] = ((t.x / (worldContext.pixelsPerBlock)) * worldContext.engineController.physicsEngine.blockSizeInMeters);
-                input[0, 7] = ((t.y / (worldContext.pixelsPerBlock)) * worldContext.engineController.physicsEngine.blockSizeInMeters); ;
-                double[,] neuralNetOutput = neuralNet.calculateNeuralNet(input); //or somesuch
-
-                double maxValue = neuralNetOutput[0,0];
-                int maxValueIndex = 0;
-                for (int i = 0; i < neuralNetOutput.GetLength(1); i++)
-                {
-                    if (maxValue < neuralNetOutput[0, i])
-                    {
-                        maxValue = neuralNetOutput[0, i];
-                        maxValueIndex = i;
-                    }
-                }
-                
-                
-                //Calculate greedy epsilon:
-                Random r = new Random();
-
-                if (r.NextDouble() < greedyEpsilon)
-                {
-                    //Set a random action
-                    maxValueIndex = r.Next(0, neuralNetOutput.GetLength(1));
-                    maxValue = neuralNetOutput[0, maxValueIndex];
-                }
-
-                actionIndex = maxValueIndex;
-                maxEstimatedReward = maxValue;
-
-                if ((maxValueIndex == 0 || Keyboard.GetState().IsKeyDown(Keys.D)) && !Keyboard.GetState().IsKeyDown(Keys.A))
-                {
-                    //Move right
-                    accelerationX += 75;
-                    actionIndex = 0;
-                }
-                if ((maxValueIndex == 1 || Keyboard.GetState().IsKeyDown(Keys.A)) && !Keyboard.GetState().IsKeyDown(Keys.D))
-                {
-                    //Move left
-                    accelerationX -= 75;
-                    actionIndex = 1;
-                }
-                if ((maxValueIndex == 2 || Keyboard.GetState().IsKeyDown(Keys.W)) && isOnGround)
-                {
-                    accelerationY += 3 / gameTime.ElapsedGameTime.TotalSeconds;
-                    actionIndex = 2;
-                }
-
-                //The reward is equal to 1/ the distance to the target
-                reward = distanceRewardConst / Math.Pow(Math.Pow(t.x - x, 2) + Math.Pow(t.y - y, 2), 0.5);
-
-                //Instead, take a sample every 1 second
-
-                if (greedyEpsilon < 0.1) {
-                    greedyEpsilon = 0.005;
-                }
-
-                if (updateDuration <= 0)
-                {
-                    
-                    //At a certain point: Stop learning
-                    //Q-Learning:
-                    //The neural net predicts a linear output that corrosponds to the estimated reward from that action: Eg. 40 points for moving left, 20 from moving right
-                    //You store a record of samples through out an era. You take the input and the output of the neural net. The reward recieved from that input (eg. difference between t & t + 1)
-                    //I'll need to store/update some temporary values I guess.
-                    //With each sample, update the gradient descent thing using the current reward as the expected reward.
-                    Sample currentSample = new Sample();
-                    currentSample.state = input;
-                    currentSample.output = neuralNetOutput;
-                    currentSample.rewardChange = reward;
-                    currentSample.actionIndex = maxValueIndex;
-
-                    //Adjust the previous sample with the current reward difference
-                    if (samples.Count > 0)
-                    {
-                        //samples[samples.Count - 1].rewardChange = reward - samples[samples.Count - 1].rewardChange;
-                        if (samples[samples.Count - 1].rewardChange < 0)
-                        {
-                            //So evidently going left has been found to decrease the reward! SO now what
-                        }
-                        samples[samples.Count - 1].nextState = input;
-                    }
-
-                    priorReward = reward;
-                    hitTargetReward = 0;
-                    if (samples.Count > 1)
-                    {
-                        neuralNet.updateGradientsFromSample(samples[samples.Count - 2]);
-                        neuralNet.learn(1);
-                    }
-
-                    samples.Add(currentSample);
-
-                    updateDuration = maxUpdateDuration;
-                } else
-                {
-                    updateDuration -= gameTime.ElapsedGameTime.TotalSeconds;
-
-                }                
+                input[0, 7] = ((t.y / (worldContext.pixelsPerBlock)) * worldContext.engineController.physicsEngine.blockSizeInMeters);
+                input[0, 8] = ((t.x / (worldContext.pixelsPerBlock)) * worldContext.engineController.physicsEngine.blockSizeInMeters) - ((x / (worldContext.pixelsPerBlock)) * worldContext.engineController.physicsEngine.blockSizeInMeters);
+                input[0, 9] = ((t.y / (worldContext.pixelsPerBlock)) * worldContext.engineController.physicsEngine.blockSizeInMeters) - ((y / (worldContext.pixelsPerBlock)) * worldContext.engineController.physicsEngine.blockSizeInMeters);
+                input[0, 10] = Convert.ToInt32(isOnGround);
+                maxEstimatedReward = neuralNet.critic.calculateNeuralNet(input)[0,0];
             }
-            else {
-                greedyEpsilon *= greedyEpslionDecay;
-                era += 1;
-                //What I'll do, is just update but using the methods, ignoring the samples
-
-                //The era ended: Compute all of the gradient changes and such:
-                //Ignore the last sample as it has incomplete information
-                for (int i = 0; i < samples.Count - 2; i++)
-                {
-                    //for each sample:
-                    //neuralNet.updateGradientsFromSample(samples[i]);
-                }
-                
-                    //neuralNet.learn(samples.Count);
-                
-
-                //Reset the agent's location:
-                t.x = 300;
-                x = 200;
-                y = 0;
-                velocityX = 0;
-                velocityY = 0;
-                accelerationY = 0;
-                accelerationX = 0;
-                
-                eraDuration = maxEraDuration;
-                samples.Clear();
-            }
-
         }
 
     }
@@ -1006,6 +1298,7 @@ namespace AITesting
         public double rewardChange;
         public double[,] nextState;
         public int actionIndex;
+        public bool wasClipped = false;
     }
     public class NeuralNet {
         //Reward: 1/Distance to target
@@ -1033,6 +1326,13 @@ namespace AITesting
         //The calculation loop should only be: for each node layer, looping forwards, call calculate layer passing in previous Nodelayer's output, the current weight and bias
         public NodeLayer[] nodeLayers;
 
+        public NeuralNetCostFunction costFunction;
+        NodeLayerActivationFunction outputFunction;
+        NodeLayerActivationFunction baseLayerFunction;
+
+        public List<(int era, double criticLoss, double rewardDifference, double rewardEstimate)> criticLossDatapoints = new List<(int era, double criticLoss, double rewardDifference, double rewardEstimate)>();
+        public double maxLoss;
+
         //Back propigation:
         //For each node, it's value can be defined as the sigmoid of ( the sum of all the previous layers weights * activation function + a bias)
         //The cost function can just be the mean squared difference
@@ -1054,34 +1354,87 @@ namespace AITesting
         //Sum of the Cost for each neuron in the last layer to get the total cost
 
         //With more than one neuron: Z is just the addition of all the weights * activation function of that neuron
-        
+
         //The influence on the cost of the activation of a previous neuron is the sum of the influence through all neurons in the current layer. as there's multiple paths through which it influences the cost
-        
+
 
         //Finding the influence on the cost of a previous neuron, this can then be passed into that neuron for it to calculate the impact of it's own weights on the cost
 
         //Derivative of C with respect to A (L-1) = sum of der(z)/der(A(L-1) * der(A)/Der(z) * Der(C)/der(A)
-        
+
 
 
         //So the node values are just the derivative of sigmoid * derivative of cost. Both of which already exist
 
         //So you average that expression across all training examples to get the change to make
 
-        
-        double learnRate = 0.0000001;
-        double futureRewardDiscount = 0.5;
 
-        double[] actionCosts = new double[]{0, 0, 0};
+        //With double Q-Learning:
+        //You have two separate neural nets: One online and one offline
+        //The online neural net is the neural net that makes the decision on what action to take based on the highest Q value
+        //Then each step, the output Q value is gradient descented as you do in normal Q learning
+        //But the "future" prediction value comes from the offline neural net
+        //After each era, the weights and biases of the offline neural net is updated to be the same as the online one
+        //This is supposed to stop the inconsistencies of the learning system
+        // -> Didn't work
+
+
+        //PPO
+        //Actor - Critic system
+        //There are two seperate networks, one (the actor) determines the probability of any discrete action ocurring at that point in time
+        //The critc then determines an estimate of the reward of that action
+        //If the action was predicted to be good, adjust the probability of that action to be higher based on the gradient (prob(a)currently/prob(a)previously) within a limit
+        //Then adjust the critic network to more closely match the actual reward output
+
+
+
+        NeuralNet offlineNeuralNet;
+        public NeuralNet critic;
+        
+        double learnRate = 0.003;
+        const double learningDecay = 0.9999;
+        const double futureRewardDiscount = 0;
+
+        double[] actionCosts = new double[]{0, 0, 0, 5};
         double leakyReluConstant = 0.01;
 
+        double[] advantageArray;
+        double[] discountedFutureReward;
+
+        const double ppoConstraint = 0.1;
+        const double gae = 0.95;
+
         double[,] input;
-        public NeuralNet(int[] layerNodeNumbers)
+        public NeuralNet(int[] layerNodeNumbers, NeuralNetCostFunction costFunction, NodeLayerActivationFunction outputFunction, NodeLayerActivationFunction baseFunction)
         {
             nodeLayers = new NodeLayer[layerNodeNumbers.Length - 1];
-            for (int i = 1; i < layerNodeNumbers.Length; i++) {
-                nodeLayers[i - 1] = (new NodeLayer(layerNodeNumbers[i], layerNodeNumbers[i-1]));
+            
+            for (int i = 1; i < layerNodeNumbers.Length; i++)
+            {
+                NodeLayer n = (new NodeLayer(layerNodeNumbers[i], layerNodeNumbers[i - 1]));
+                n.costFunction = costFunction;
+                if (i != layerNodeNumbers.Length - 1)
+                {
+                    n.activationFunction = baseFunction;
+                }
+                else {
+                    n.activationFunction = outputFunction;
+                }
+                    nodeLayers[i - 1] = n;
             }
+
+            this.costFunction = costFunction;
+            this.outputFunction = outputFunction;
+            this.baseLayerFunction = baseFunction;
+        }
+
+        public void createOfflineNeuralNet(int[] layerNodeNumbers) {
+            offlineNeuralNet = new NeuralNet(layerNodeNumbers, NeuralNetCostFunction.AdvantageCost, outputFunction, baseLayerFunction);
+        }
+
+        public void createCriticNeuralNet(int[] layerNodeNumbers) {
+            //The critic only has one output node
+            critic = new NeuralNet(layerNodeNumbers, NeuralNetCostFunction.MeanSquaredError, NodeLayerActivationFunction.linear, NodeLayerActivationFunction.relu);
         }
         
         //Refactor everytihing to have the functions in places that make more sense: eg. inside the layers
@@ -1101,20 +1454,75 @@ namespace AITesting
             if (calculate)
             {
                 nodeLayers[0].weightedInput = calculateLayerWeightedInput(input, nodeLayers[0].weights, nodeLayers[0].biases);
-                nodeLayers[0].output = reluActivationFunction(nodeLayers[0].weightedInput);
 
-                //Forward propogate for each layer
-                for (int i = 1; i < nodeLayers.Length - 1; i++)
+                if (baseLayerFunction == NodeLayerActivationFunction.sigmoid)
                 {
-                    //Breaks up the calculation into two arrays to capture the inputs and the activation for easier back propigation
-                    nodeLayers[i].weightedInput = calculateLayerWeightedInput(nodeLayers[i - 1].output, nodeLayers[i].weights, nodeLayers[i].biases);
-                    nodeLayers[i].output = reluActivationFunction(nodeLayers[i].weightedInput);
+                    nodeLayers[0].output = sigmoidActivationFunction(nodeLayers[0].weightedInput);
+                }
+                else if (baseLayerFunction == NodeLayerActivationFunction.relu)
+                {
+                    nodeLayers[0].output = reluActivationFunction(nodeLayers[0].weightedInput);
+                }
+                else if (baseLayerFunction == NodeLayerActivationFunction.quadratic)
+                {
+                    nodeLayers[0].output = quadraticActivationFunction(nodeLayers[0].weightedInput);
+                }
+                else if (baseLayerFunction == NodeLayerActivationFunction.softmax)
+                {
+                    nodeLayers[0].output = logSoftmaxActivationFunction(nodeLayers[0].weightedInput);
+                }
+                else {
+                    nodeLayers[0].output = nodeLayers[0].weightedInput;
+                }
+
+                    //Forward propogate for each layer
+                    for (int i = 1; i < nodeLayers.Length - 1; i++)
+                    {
+                        //Breaks up the calculation into two arrays to capture the inputs and the activation for easier back propigation
+                        nodeLayers[i].weightedInput = calculateLayerWeightedInput(nodeLayers[i - 1].output, nodeLayers[i].weights, nodeLayers[i].biases);
+                        if (baseLayerFunction == NodeLayerActivationFunction.sigmoid)
+                        {
+                            nodeLayers[i].output = sigmoidActivationFunction(nodeLayers[i].weightedInput);
+                        }
+                        else if (baseLayerFunction == NodeLayerActivationFunction.relu)
+                        {
+                            nodeLayers[i].output = reluActivationFunction(nodeLayers[i].weightedInput);
+                        }
+                        else if (baseLayerFunction == NodeLayerActivationFunction.quadratic)
+                        {
+                            nodeLayers[i].output = quadraticActivationFunction(nodeLayers[i].weightedInput);
+                        }
+                        else if (baseLayerFunction == NodeLayerActivationFunction.softmax)
+                        {
+                            nodeLayers[i].output = logSoftmaxActivationFunction(nodeLayers[i].weightedInput);
+                        }
+                    else
+                        {
+                            nodeLayers[i].output = nodeLayers[i].weightedInput;
+                        }
                 }
 
                 //For the last layer: don't pass it through an activation function: leave it linear:
                 nodeLayers[nodeLayers.Length - 1].weightedInput = calculateLayerWeightedInput(nodeLayers[nodeLayers.Length - 2].output, nodeLayers[nodeLayers.Length - 1].weights, nodeLayers[nodeLayers.Length - 1].biases);
-                nodeLayers[nodeLayers.Length - 1].output = nodeLayers[nodeLayers.Length - 1].weightedInput;
-
+                if (outputFunction == NodeLayerActivationFunction.sigmoid)
+                {
+                    nodeLayers[nodeLayers.Length - 1].output = sigmoidActivationFunction(nodeLayers[nodeLayers.Length - 1].weightedInput);
+                }
+                else if (outputFunction == NodeLayerActivationFunction.relu)
+                {
+                    nodeLayers[nodeLayers.Length - 1].output = reluActivationFunction(nodeLayers[nodeLayers.Length - 1].weightedInput);
+                }
+                else if (outputFunction == NodeLayerActivationFunction.quadratic)
+                {
+                    nodeLayers[nodeLayers.Length - 1].output = quadraticActivationFunction(nodeLayers[nodeLayers.Length - 1].weightedInput);
+                }
+                else if (outputFunction == NodeLayerActivationFunction.softmax) {
+                    nodeLayers[nodeLayers.Length - 1].output = logSoftmaxActivationFunction(nodeLayers[nodeLayers.Length - 1].weightedInput);
+                }
+                else
+                {
+                    nodeLayers[nodeLayers.Length - 1].output = nodeLayers[nodeLayers.Length - 1].weightedInput;
+                }
                 return nodeLayers[nodeLayers.Length - 1].output;
             }
             else { return null; }
@@ -1153,6 +1561,41 @@ namespace AITesting
             return matrix;
         }
 
+        public double[,] quadraticActivationFunction(double[,] matrix)
+        {
+            for (int x = 0; x < matrix.GetLength(0); x++)
+            {
+                for (int y = 0; y < matrix.GetLength(1); y++)
+                {
+                    matrix[x, y] *= matrix[x, y];
+                }
+            }
+            return matrix;
+        }
+
+        public double[,] logSoftmaxActivationFunction(double[,] matrix) {
+            double sum = 0;
+            for (int x = 0; x < matrix.GetLength(0); x++)
+            {
+                for (int y = 0; y < matrix.GetLength(1); y++)
+                {
+                    sum += Math.Exp(matrix[x, y]);
+                }
+            }
+            System.Diagnostics.Debug.WriteLine(sum);
+            for (int x = 0; x < matrix.GetLength(0); x++)
+            {
+                for (int y = 0; y < matrix.GetLength(1); y++)
+                {
+                    if (sum != 0)
+                    {
+                        matrix[x, y] = Math.Log(Math.Exp(matrix[x,y])/sum);
+                    }
+                }
+            }
+
+            return matrix;
+        }
 
         public double[,] multiplyMatrices(double[,] input, double[,] weights) {
             if (input.GetLength(0) == weights.GetLength(1))
@@ -1214,20 +1657,88 @@ namespace AITesting
 
         public double individiualCost(double actual, double expected) {
             double error = actual - expected;
-            System.Diagnostics.Debug.WriteLine(error * error);
             return error * error;
         }
 
+        public void updateFromSampleList(List<Sample> samples, int era) {
+            advantageArray = new double[samples.Count - 1];
+            discountedFutureReward = new double[samples.Count - 1];
+            int sampleCount = samples.Count;
+            critic.criticLossDatapoints.Add((0,0,0,0));
+
+            for (int i = samples.Count - 2; i >= 0; i--)
+            {
+                calculateAdvantage(samples[i], i, sampleCount);
+                
+                updateGradientsFromSample(samples[i], i);
+                //I realised that the critic never gets a sample update
+                critic.discountedFutureReward = discountedFutureReward;
+                critic.updateGradientsFromSample(samples[i], i);
+                double[,] expectedReward = new double[1, 1];
+                expectedReward[0, 0] = samples[i].rewardChange;
+                
+                critic.addCriticLossValue(samples[sampleCount - 2].state, expectedReward, era);
+
+                //Learning after every gradient descent instead of after each batch of samples.
+                learn(samples.Count);
+                critic.learn(samples.Count);
+            }
+            (int era, double criticLoss, double rewardDifference, double rewardEstimate) currentValue = critic.criticLossDatapoints[era - 2];
+            critic.criticLossDatapoints[era - 2] = (currentValue.era, currentValue.criticLoss/(double)samples.Count, currentValue.rewardDifference/(double)samples.Count, currentValue.rewardEstimate/(double)samples.Count);
+
+            if (critic.criticLossDatapoints[era - 2].criticLoss > critic.maxLoss)
+            {
+                critic.maxLoss = critic.criticLossDatapoints[era - 2].criticLoss;
+                System.Diagnostics.Debug.WriteLine(critic.maxLoss);
+            }
 
 
+        }
+
+        public double averageNeuralNet(double[,] values) {
+            double average = 0;
+            for (int i = 0; i < values.GetLength(1); i++) {
+                average += values[0, i];
+            }
+
+            if (values.GetLength(1) != 0) {
+                average /= values.GetLength(1);
+            }
+
+            return average;
+        }
+
+        public void addCriticLossValue(double[,] state, double[,] expectedValue, int era) {
+            double[,] actualOutput = calculateNeuralNet(state);
+            double cost = calculateCost(actualOutput, expectedValue)[0,0];
+            
+            //Era - 2, as the era value is added onto before being passed into the function
+            
+            (int era, double criticLoss, double rewardDifference, double rewardEstimate) currentValue = criticLossDatapoints[era - 2];
+            criticLossDatapoints[era - 2] = (era, (cost + currentValue.criticLoss), (actualOutput[0,0] - expectedValue[0,0] + currentValue.rewardDifference), (actualOutput[0,0] + currentValue.rewardEstimate));
+        }
+        public void calculateAdvantage(Sample samples, int i, int sampleCount) {
+            
+            discountedFutureReward[i] = samples.rewardChange - actionCosts[samples.actionIndex];
+            if (i < sampleCount - 2)
+            {
+                discountedFutureReward[i] += gae * futureRewardDiscount * discountedFutureReward[i + 1];
+            }
+
+            //What's the difference between the real discounted future rewards and what the critic predicted? Is it better or worse than expected?
+            advantageArray[i] = discountedFutureReward[i] - critic.calculateNeuralNet(samples.state)[0,0];
+                
+        }
         //The output layer bias gradient descent is just the node Values, while the weights are the node values * inputValues
-        public void updateGradientsFromSample(Sample s) {
+        public void updateGradientsFromSample(Sample s, int sampleIndex) {
             //calculate the expected output by passing in the sample's next state through the neural net:
-            double[,] expectedNeuralNetOutput = calculateNeuralNet(s.nextState);
+
+            double[,] expectedNeuralNetOutput = null;
+            if (offlineNeuralNet != null) { expectedNeuralNetOutput = offlineNeuralNet.calculateNeuralNet(s.state); }
+            /*
             //Convert to a 1D array:
             //pass the sample's current position data to flush the inputs/outputs:
             //Compute the optimal reward through the bellman equation:
-            calculateNeuralNet(s.state);
 
             //Find max and it's index as you predict the future agent to be perfectly optimal
             double maxValue = 0;
@@ -1245,48 +1756,110 @@ namespace AITesting
             }
             //If the model is just running into a wall, penalise it
             if (s.rewardChange == 0) {
-                s.rewardChange = 0;
+                s.rewardChange = -1;
             }
             else if (s.rewardChange < 0) {
-                s.rewardChange *= 1; //Really punish it
+                s.rewardChange *= 2; //Really punish it
             }
-            double optimalReward = (s.rewardChange- actionCosts[s.actionIndex]) + futureRewardDiscount * maxValue;
+            //double optimalReward = (s.rewardChange - actionCosts[s.actionIndex]) + futureRewardDiscount * maxValue;
 
-            //double optimalReward = s.rewardChange;
 
-            //The index is wrong for this :(
-            updateOnePath(optimalReward, s.actionIndex);
-            /*
-            if (s.rewardChange > 0)
+            updateOnePath(optimalReward, s.actionIndex);*/
+
+
+            //PPO algorithm: r(0) = pi(current)/pi(old)
+            //Constrain r to 1 +- e;
+            if (costFunction == NeuralNetCostFunction.AdvantageCost)
             {
-                updateOnePath(100, s.actionIndex);
-                updateOnePath(0, 1 - s.actionIndex);
+                
+                double rOldValue = s.output[0, s.actionIndex] / expectedNeuralNetOutput[0, s.actionIndex];
+                double rValue = rOldValue;
+
+                if (rValue > 1 + ppoConstraint)
+                {
+                    rValue = 1 + ppoConstraint;
+                    s.wasClipped = true;
+                }
+                else if (rValue < 1 - ppoConstraint)
+                {
+                    rValue = 1 - ppoConstraint;
+                    s.wasClipped = true;
+                }
+
+                //If the clipped value is larger (a bigger change) than the old one, unclip it
+                if (rValue * advantageArray[sampleIndex] > rOldValue * advantageArray[sampleIndex]) {  rValue = rOldValue; s.wasClipped = false;  }
+                calculateNeuralNet(s.state);
+                updateOnePath(rValue * advantageArray[sampleIndex], s.actionIndex, s.wasClipped);
+                /*
+                if (advantageArray != null)
+                {
+                    if (sampleIndex < advantageArray.Length - 1)
+                    {
+                        if (advantageArray[sampleIndex] > 0)
+                        {
+                            updateOnePath(1, s.actionIndex, s.wasClipped);
+                        }
+                        else
+                        {
+                            //DO you adjust the output (positive, negative) based on the critics output of the action
+                            //Then do this calculation to constrain the values, and update all from there? I'll figure it out later
+                            //The loss value is the rValue * reward from the critic. So if you make the system worse, it'll be lower than A
+
+                            updateOnePath(0.1, s.actionIndex, s.wasClipped);
+                        }
+                    }
+                    else
+                    {
+                        //Just meh the last action
+                        updateOnePath(0.5, s.actionIndex, s.wasClipped);
+                    }
+                }*/
+
+                
+                
             }
-            else {//It was a bad decision:
-                updateOnePath(0, s.actionIndex);
-                updateOnePath(100, 1-s.actionIndex);
-            }*/
-            
-            
+            else {
+                double[,] tempOutput = calculateNeuralNet(s.state);
+                double[,] expectedOutput = new double[1, 1];
+                expectedOutput[0,0] = discountedFutureReward[sampleIndex];
+                //System.Diagnostics.Debug.WriteLine("Expected: " + expectedOutput[0,0]);
+                //System.Diagnostics.Debug.WriteLine("Actual: " + tempOutput[0,0]);
+                updateAllGradients(expectedOutput, false);
+            }
+
             //You don't update all the gradients: only the ones connected the the output that got chosen
         }
-        public void updateAllGradients(double[,] expectedNetOutput) {
-            NodeLayer outputLayer = nodeLayers[nodeLayers.Length  - 1];
-            double[,] nodeValues = outputLayer.calculateNodeValues(expectedNetOutput);
-            outputLayer.updateGradientDescent(nodeLayers[nodeLayers.Length - 2].output, nodeValues);
-            //An error was occurring because the output layer was linear, but all the previous layers were sigmoid activated, the node values were breaking everything
-            nodeValues = outputLayer.reluCalculatedNodeValues(nodeValues);
-            for (int i = nodeLayers.Length - 2; i >= 1; i--) {
-                nodeValues = nodeLayers[i].calculateHiddenLayerNodeValues(nodeLayers[i + 1], nodeValues);
-                nodeLayers[i].updateGradientDescent(nodeLayers[i-1].output, nodeValues);
+        public void updateOfflineNeuralNet() {
+            if (offlineNeuralNet != null) {
+                offlineNeuralNet.setNeuralNetWeights(nodeLayers);
             }
+        }
+        public void setNeuralNetWeights(NodeLayer[] newNodeLayers) {
+            for (int i = 0; i < newNodeLayers.Count(); i++) {
+                if (i < nodeLayers.Count())
+                {
+                    nodeLayers[i].setWeight(newNodeLayers[i].weights);
+                    nodeLayers[i].setBiases(newNodeLayers[i].biases);
+                }
+            }
+        }
+        public void updateAllGradients(double[,] expectedNetOutput, bool wasSampleClipped) {
+            NodeLayer outputLayer = nodeLayers[nodeLayers.Length  - 1];
+            double[,] nodeValues = outputLayer.calculateNodeValues(expectedNetOutput, wasSampleClipped);
+            outputLayer.updateGradientDescent(nodeLayers[nodeLayers.Length - 2].output, nodeValues);
+            
+                for (int i = nodeLayers.Length - 2; i >= 1; i--)
+                {
+                    nodeValues = nodeLayers[i].calculateHiddenLayerNodeValues(nodeLayers[i + 1], nodeValues);
+                    nodeLayers[i].updateGradientDescent(nodeLayers[i - 1].output, nodeValues);
+                }
 
             //Because the layer doesn't store the inputs, there has to be a final update for the first hidden layer that takes in the net's input
             nodeValues = nodeLayers[0].calculateHiddenLayerNodeValues(nodeLayers[1], nodeValues);
             nodeLayers[0].updateGradientDescent(input, nodeValues);
 
         }
-        public void updateOnePath(double expectedOutput, int outputPathIndex) {
+        public void updateOnePath(double expectedOutput, int outputPathIndex, bool wasSampleClipped) {
 
             //Mask the output layer's node values for everything except for the action that was taken: By zeroing out all the nodeValues,
             // all further back prop becomes zero
@@ -1303,7 +1876,8 @@ namespace AITesting
                 }
             }
             //Instead, just set all the non-paths to have a perfect output, so it won't change anything?
-            double[,] nodeValues = outputLayer.calculateNodeValues(zeroedExpectedOutput);
+            double[,] nodeValues = outputLayer.calculateNodeValues(zeroedExpectedOutput, wasSampleClipped);
+            
             for (int x = 0; x < nodeValues.GetLength(0); x++) {
                 for (int y = 0; y < nodeValues.GetLength(1); y++) {
                     if (y != outputPathIndex) {
@@ -1313,6 +1887,7 @@ namespace AITesting
             }//*/
 
             outputLayer.updateGradientDescent(nodeLayers[nodeLayers.Length - 2].output, nodeValues);
+            
 
             for (int i = nodeLayers.Length - 2; i >= 1; i--)
             {
@@ -1326,6 +1901,7 @@ namespace AITesting
         }
         public void learn(double elapsedDurationOfArbitrarySize) {
             applyAllGradients(learnRate/elapsedDurationOfArbitrarySize);
+            learnRate *= learningDecay;
         }
         public void applyAllGradients(double learningStrength) {
             for (int i = 0; i < nodeLayers.Length; i++) {
@@ -1345,6 +1921,10 @@ namespace AITesting
 
         public double[,] costWeights;
         public double[,] costBiases;
+
+        public NodeLayerActivationFunction activationFunction;
+        public NeuralNetCostFunction costFunction;
+        
 
         double leakyReluConstant = 0.01;
         public NodeLayer(int nodeCount, int previousLayerNodeCount) {
@@ -1374,6 +1954,7 @@ namespace AITesting
             }
         }
 
+        #region Gradient Descent Calculations
         public void updateGradientDescent(double[,] input, double[,] nodeValues)
         {
             for (int x = 0; x < output.GetLength(0); x++) {
@@ -1393,9 +1974,24 @@ namespace AITesting
             }
         }
 
-        public double individualCostDerivative(double actual, double expected)
+        public double individualCostDerivative(double expected, double actual, bool wasSampleClipped)
         {
-            return 2 * (actual - expected);
+            if (costFunction == NeuralNetCostFunction.AdvantageCost)
+            {
+                if (wasSampleClipped)
+                {
+                    return 0;
+                }
+                else
+                {
+                    return expected / actual ;
+                }
+            }
+            else {
+                //System.Diagnostics.Debug.WriteLine("Expected2: " + expected);
+                //System.Diagnostics.Debug.WriteLine("Actual2: " + actual);
+                return 2 * (actual - expected);
+            }
         }
 
         public double[,] sigmoidActivationDerivative(double[,] matrix)
@@ -1429,56 +2025,89 @@ namespace AITesting
             return matrix;
         }
 
+        public double[,] quadraticActivationDerivative(double[,] matrix) {
+            for (int x = 0; x < matrix.GetLength(0); x++)
+            {
+                for (int y = 0; y < matrix.GetLength(1); y++)
+                {
+                    matrix[x, y] = 2 * matrix[x,y];
+                }
+            }
+            return matrix;
+        }
+
+        public double[,] softmaxActivationDerivative(double[,] matrix) {
+            //if i = j, return 1 - pi
+            //if i != j, return - pi;
+
+            //Because the input is log(pi),
+            //We need to do e^log(pi) to just get pi;
+
+            for (int x = 0; x < matrix.GetLength(0); x++) {
+                for (int y = 0; y < matrix.GetLength(1); y++) {
+                    if (x == y)
+                    {
+                        matrix[x, y] = 1 - Math.Exp(matrix[x, y]);
+                    }
+                    else {
+                        matrix[x, y] = -Math.Exp(matrix[x,y]);
+                    }
+                }
+            }
+            return matrix;
+        }
 
 
-        public double[,] calculateNodeValues(double[,] expected)
+
+        public double[,] calculateNodeValues(double[,] expected, bool wasSampleClipped)
         {
             double[,] nodeValues = new double[expected.GetLength(0), expected.GetLength(1)];
+            if (costFunction == NeuralNetCostFunction.MeanSquaredError) {
+                //System.Diagnostics.Debug.WriteLine(output.GetLength(0) + ", " + output.GetLength(1));
+            }
             for (int x = 0; x < nodeValues.GetLength(0); x++)
             {
                 for (int y = 0; y < nodeValues.GetLength(1); y++)
                 {
-                    nodeValues[x, y] = individualCostDerivative(output[x, y], expected[x, y]);
+                    nodeValues[x, y] = individualCostDerivative(expected[x, y], output[x, y], wasSampleClipped);
                 }
             }
-            //Linearise the outputs by removing the sigmoid function:
-            /*
-            double[,] sigmoidDerivative = sigmoidActivationDerivative(weightedInput);
-            for (int x = 0; x < nodeValues.GetLength(0); x++)
+
+            double[,] activationFunctionArray = new double[0,0];
+            if (activationFunction == NodeLayerActivationFunction.sigmoid)
             {
-                for (int y = 0; y < nodeValues.GetLength(1); y++)
+
+                activationFunctionArray = sigmoidActivationDerivative(weightedInput);
+            }
+            else if (activationFunction == NodeLayerActivationFunction.relu)
+            {
+                activationFunctionArray = reluActivationDerivative(weightedInput);
+            }
+            else if (activationFunction == NodeLayerActivationFunction.quadratic)
+            {
+                activationFunctionArray = quadraticActivationDerivative(weightedInput);
+            }
+            else if (activationFunction == NodeLayerActivationFunction.softmax) {
+                activationFunctionArray = softmaxActivationDerivative(weightedInput);
+            }
+            if (activationFunction != NodeLayerActivationFunction.linear && activationFunctionArray.GetLength(1) != 0)
+            {
+                for (int x = 0; x < nodeValues.GetLength(0); x++)
                 {
-                    nodeValues[x, y] *= sigmoidDerivative[x, y];
+                    for (int y = 0; y < nodeValues.GetLength(1); y++)
+                    {
+                        nodeValues[x, y] *= activationFunctionArray[x, y];
+                        if (costFunction == NeuralNetCostFunction.MeanSquaredError)
+                        {
+                            System.Diagnostics.Debug.WriteLine(nodeValues[x, y]);
+                        }
+                    }
                 }
-            }*/
+            }
             return nodeValues;
         }
 
-        public double[,] sigmoidCalculatedNodeValues(double[,] nodeValues) {
-            double[,] sigmoidDerivative = sigmoidActivationDerivative(weightedInput);
-            for (int x = 0; x < nodeValues.GetLength(0); x++)
-            {
-                for (int y = 0; y < nodeValues.GetLength(1); y++)
-                {
-                    nodeValues[x, y] *= sigmoidDerivative[x, y];
-                }
-            }
-            return nodeValues;
-        }
-
-        public double[,] reluCalculatedNodeValues(double[,] nodeValues)
-        {
-            double[,] reluDerivative = reluActivationDerivative(weightedInput);
-            for (int x = 0; x < nodeValues.GetLength(0); x++)
-            {
-                for (int y = 0; y < nodeValues.GetLength(1); y++)
-                {
-                    nodeValues[x, y] *= reluDerivative[x, y];
-                }
-            }
-            return nodeValues;
-        }
-
+        //Somehow completely ignores the activation function of that layer?? I'll look into this
         public double[,] calculateHiddenLayerNodeValues(NodeLayer oldLayer, double[,] oldNodeValues) {
             double[,] newNodeValues = new double[output.GetLength(0), output.GetLength(1)];
 
@@ -1495,11 +2124,32 @@ namespace AITesting
                     newNodeValues[x, y] = newNodeValue;
                 }
             }
-            //Last step: Multiply by the derivative of the sigmoid weighted inputs
-            double[,] derivativeOfActivationFunction = reluActivationDerivative(weightedInput);
-            for (int x = 0; x < output.GetLength(0); x++) {
-                for (int y = 0; y < output.GetLength(1); y++) {
-                    newNodeValues[x, y] *= derivativeOfActivationFunction[x, y];
+
+            double[,] activationFunctionArray = new double[0, 0];
+            if (activationFunction == NodeLayerActivationFunction.sigmoid)
+            {
+                activationFunctionArray = sigmoidActivationDerivative(weightedInput);
+            }
+            else if (activationFunction == NodeLayerActivationFunction.relu)
+            {
+                activationFunctionArray = reluActivationDerivative(weightedInput);
+            }
+            else if (activationFunction == NodeLayerActivationFunction.quadratic)
+            {
+                activationFunctionArray = quadraticActivationDerivative(weightedInput);
+            }
+            else if (activationFunction == NodeLayerActivationFunction.softmax)
+            {
+                activationFunctionArray = softmaxActivationDerivative(weightedInput);
+            }
+            if (activationFunction != NodeLayerActivationFunction.linear && activationFunctionArray.GetLength(1) != 0)
+            {
+                for (int x = 0; x < oldNodeValues.GetLength(0); x++)
+                {
+                    for (int y = 0; y < oldNodeValues.GetLength(1); y++)
+                    {
+                        newNodeValues[x, y] *= activationFunctionArray[x, y];
+                    }
                 }
             }
             return newNodeValues;
@@ -1520,6 +2170,7 @@ namespace AITesting
             {
                 for (int y = 0; y < costBiases.GetLength(1); y++)
                 {
+                    
                     if (costBiases[x, y] * updateStrength > 5) { costBiases[x, y] = 5 / updateStrength; }
                     else if (costBiases[x, y] * updateStrength < -5) { costBiases[x, y] = -5 / updateStrength; }
                         biases[x, y] -= costBiases[x, y] * updateStrength;
@@ -1527,5 +2178,26 @@ namespace AITesting
                 }
             }
         }
+        #endregion
+
+        public void setWeight(double[,] weight)
+        {
+            weights = weight;
+        }
+        public void setBiases(double[,] bias) {
+            biases = bias;
+        }
+    }
+
+    public enum NodeLayerActivationFunction {
+        linear,
+        sigmoid,
+        relu,
+        quadratic,
+        softmax
+    }
+    public enum NeuralNetCostFunction {
+        AdvantageCost,
+        MeanSquaredError
     }
 }
