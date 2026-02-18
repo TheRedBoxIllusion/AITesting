@@ -7,6 +7,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Numerics;
+using System.Threading;
 
 using Vector2 = Microsoft.Xna.Framework.Vector2;
 using Vector3 = Microsoft.Xna.Framework.Vector3;
@@ -25,6 +26,13 @@ namespace AITesting
      * pass in a relative location to the target along with the target's location
      * 
      * The target moves to a spot in the opposite direction to the Ai's current direction, in increasing distances
+     * 
+     * 
+     * 
+     * New Attempt: Genetic evolution:
+     *      Instead of using error functions to back propigate error, just use a large quantity of agents over a set period of time, take the agents that had the best cummulative score at the end of the epoc, slightly modify them
+     *      And re-run the testing. It should prevent all of the back propigation errors, and local minima I hope
+     * 
      */
     public class Game1 : Game
     {
@@ -46,6 +54,11 @@ namespace AITesting
         Texture2D collisionSprite;
         Texture2D redTexture;
 
+        Timer t;
+        bool resetList = false;
+
+        public List<Target> path = new List<Target>();
+
         double timeSpeedupConstant = 9;
 
         double viewModeCooldown = 0;
@@ -63,8 +76,23 @@ namespace AITesting
 
             this.IsFixedTimeStep = true;
             this.TargetElapsedTime = TimeSpan.FromSeconds(1/360d);
+
+            t = new Timer(mouseTimerCallback);
+            t.Change(0, 300);
         }
 
+        public void mouseTimerCallback(object timerState) {
+            if (Mouse.GetState().LeftButton == ButtonState.Pressed) {
+                if (resetList) {
+                    path.Clear();
+                    resetList = false;
+                }
+                Target target = new Target();
+                target.x = Mouse.GetState().X;
+                target.y = Mouse.GetState().Y;
+                path.Add(target);
+            }
+        }
 
         protected override void Initialize()
         {
@@ -109,7 +137,7 @@ namespace AITesting
         {
             if (GamePad.GetState(PlayerIndex.One).Buttons.Back == ButtonState.Pressed || Keyboard.GetState().IsKeyDown(Keys.Escape))
                 Exit();
-
+            updatePath();
             updateEntity(gameTime);
             updatePhysicsObjects(gameTime);
             updateViewMode(gameTime);
@@ -117,6 +145,11 @@ namespace AITesting
             base.Update(gameTime);
         }
 
+        public void updatePath() {
+            if (Mouse.GetState().LeftButton == ButtonState.Released && path.Count > 0) {
+                resetList = true;
+            }
+        }
         public void updateViewMode(GameTime gameTime) {
             if (viewModeCooldown > 0) {
                 viewModeCooldown -= gameTime.ElapsedGameTime.TotalSeconds;
@@ -760,7 +793,7 @@ namespace AITesting
 
         public double greedyEpsilonDuration;
         public double maxGreedyEpsilonDuration = 0.05;
-        public double greedyEpsilonDurationDecay = 0.999;
+        public double greedyEpsilonDurationDecay = 0.5;
         public int greedyEpsilonOutput;
 
         public bool aiControl = true;
@@ -793,7 +826,7 @@ namespace AITesting
             //inputs: x, y, velocityX, velocityY, accelerationX, accelerationY
             //6 inputs, 4 in the first hidden layer, 3 in the output
             int[] neuralNetLayers = new int[] { 11, 15, 15, 2 };
-            neuralNet = new NeuralNet(neuralNetLayers, NeuralNetCostFunction.AdvantageCost, NodeLayerActivationFunction.softmax, NodeLayerActivationFunction.relu);
+            neuralNet = new NeuralNet(neuralNetLayers, NeuralNetCostFunction.MeanSquaredError, NodeLayerActivationFunction.linear, NodeLayerActivationFunction.relu);
             neuralNet.createOfflineNeuralNet(neuralNetLayers);
             neuralNet.createCriticNeuralNet(new int[] { 11,15, 15, 15, 1});
 
@@ -808,13 +841,14 @@ namespace AITesting
             base.updateLocation(xChange, yChange);
 
 
-            //reward = distanceRewardConst / Math.Pow(Math.Pow(t.x - x, 2) * xWeight + Math.Pow(t.y - y, 2) * yWeight, 0.5) + hitTargetReward;
+            reward = distanceRewardConst / Math.Pow(Math.Pow(t.x - x, 2) * xWeight + Math.Pow(t.y - y, 2) * yWeight, 0.5) + hitTargetReward;
 
             //If the x difference now is less than it was, the entity is rewarded for moving closer
             //Cummulate all the rewards over the entire duration of the sample, but reduce them according to how long the duration is
             if (aiControl)
             {
                 double newReward = 0;
+                /*
                 if (Math.Abs(t.x - x) <= distanceFromTarget.X)
                 {
                     newReward += positiveNegativeMovementRewards[0] * maxUpdateDuration;
@@ -832,11 +866,13 @@ namespace AITesting
                 else
                 {
                     newReward += positiveNegativeMovementRewards[3] * maxUpdateDuration;
-                }
+                }*/
 
-                newReward *= Math.Abs(velocityX);
 
-                reward += newReward;
+
+                //newReward *= Math.Abs(velocityX);
+
+                //reward += newReward;
 
                 distanceFromTarget.Y = (float)Math.Abs(t.y - y);
 
@@ -948,6 +984,7 @@ namespace AITesting
 
                     maxEstimatedReward = neuralNet.critic.calculateNeuralNet(input)[0, 0];
 
+                    reward = distanceRewardConst / Math.Pow(Math.Pow(t.x - x, 2) * xWeight + Math.Pow(t.y - y, 2) * yWeight, 0.5) + hitTargetReward;
 
 
 
@@ -991,6 +1028,12 @@ namespace AITesting
 
 
                         samples.Add(currentSample);
+
+                        if (samples.Count > 2)
+                        {
+                            neuralNet.updateGradientsFromSample(samples[samples.Count - 2], era);
+                            neuralNet.learn(1);
+                        }
 
                         updateDuration = maxUpdateDuration;
                     }
@@ -1079,218 +1122,218 @@ namespace AITesting
         }
 
     }
-    public class EngineController {
-        public PhysicsEngine physicsEngine;
-        public EngineController(WorldContext worldContext) {
-            physicsEngine = new PhysicsEngine(worldContext);
+        public class EngineController {
+            public PhysicsEngine physicsEngine;
+            public EngineController(WorldContext worldContext) {
+                physicsEngine = new PhysicsEngine(worldContext);
+            }
         }
-    }
-    public class WorldContext {
-        public int pixelsPerBlock = 32;
-        public Block[,] worldArray;
+        public class WorldContext {
+            public int pixelsPerBlock = 32;
+            public Block[,] worldArray;
 
-        public (int x, int y) screenSpaceOffset = (0,0);
-        public List<PhysicsObject> physicsObjects = new List<PhysicsObject>();
+            public (int x, int y) screenSpaceOffset = (0,0);
+            public List<PhysicsObject> physicsObjects = new List<PhysicsObject>();
 
-        public AiEntity controlledEntity;
+            public AiEntity controlledEntity;
 
-        public EngineController engineController;
-        public WorldContext() {
-            engineController = new EngineController(this);
-            controlledEntity = new AiEntity(this);
-            worldArray = new Block[30,15];
-            for (int x = 0; x < worldArray.GetLength(0); x++) {
-                for (int y = 0; y < worldArray.GetLength(1); y++) {
-                    worldArray[x, y] = new Block(new Rectangle(0,0,0,0), 0);
-                    worldArray[x, y].setupInitialData(this, null, (x,y));
+            public EngineController engineController;
+            public WorldContext() {
+                engineController = new EngineController(this);
+                controlledEntity = new AiEntity(this);
+                worldArray = new Block[30,15];
+                for (int x = 0; x < worldArray.GetLength(0); x++) {
+                    for (int y = 0; y < worldArray.GetLength(1); y++) {
+                        worldArray[x, y] = new Block(new Rectangle(0,0,0,0), 0);
+                        worldArray[x, y].setupInitialData(this, null, (x,y));
+                    }
                 }
-            }
 
-            for (int y = 0; y < 15; y++) {
-                worldArray[0, y] = new Block(new Rectangle(0, 0, 32, 32), 1);
-                worldArray[0, y].setupInitialData(this, null, (0, y));
-                worldArray[29, y] = new Block(new Rectangle(0, 0, 32, 32), 1);
-                worldArray[29, y].setupInitialData(this, null, (29, y));
-            }
-
-            for (int x = 0; x < 30; x++) {
-                worldArray[x, 10] = new Block(new Rectangle(0,0,32,32), 1);
-                worldArray[x, 10].setupInitialData(this, null, (x,10));
-
-                if (x > 9 || x < 11) {
-                    worldArray[x, 7] = new Block(new Rectangle(0, 0, 32, 32), 1);
-                    worldArray[x, 7].setupInitialData(this, null, (x, 7));
+                for (int y = 0; y < 15; y++) {
+                    worldArray[0, y] = new Block(new Rectangle(0, 0, 32, 32), 1);
+                    worldArray[0, y].setupInitialData(this, null, (0, y));
+                    worldArray[29, y] = new Block(new Rectangle(0, 0, 32, 32), 1);
+                    worldArray[29, y].setupInitialData(this, null, (29, y));
                 }
+
+                for (int x = 0; x < 30; x++) {
+                    worldArray[x, 10] = new Block(new Rectangle(0,0,32,32), 1);
+                    worldArray[x, 10].setupInitialData(this, null, (x,10));
+
+                    if (x > 9 || x < 11) {
+                        worldArray[x, 7] = new Block(new Rectangle(0, 0, 32, 32), 1);
+                        worldArray[x, 7].setupInitialData(this, null, (x, 7));
+                    }
+                }
+
+                worldArray[10, 9] = new Block(new Rectangle(0,0,32,32), 1);
+                worldArray[10, 9].setupInitialData(this, null, (10,9));
+
+
+
+            }
+        }
+        public class Block
+        {
+            public Rectangle sourceRectangle;
+            public int emmissiveStrength;
+            public int ID;
+            public List<Vector2> faceVertices;
+            public int x { get; set; }
+            public int y { get; set; }
+            public bool isBlockTransparent = false;
+            public (int width, int height) dimensions = (1, 1); //Default to 1 by 1 blocks
+            public Vector4 faceDirection;
+
+
+            public Block(Rectangle textureSourceRectangle, int ID)
+            {
+                this.sourceRectangle = textureSourceRectangle;
+                this.ID = ID;
+            }
+            public Block(Rectangle textureSourceRectangle, int emmissiveStrength, int ID)
+            {
+                this.sourceRectangle = textureSourceRectangle;
+                this.emmissiveStrength = emmissiveStrength;
+                this.ID = ID;
+            }
+            public Block(int ID)
+            {
+                this.ID = ID;
             }
 
-            worldArray[10, 9] = new Block(new Rectangle(0,0,32,32), 1);
-            worldArray[10, 9].setupInitialData(this, null, (10,9));
+            public Block(Block b)
+            {
+                sourceRectangle = b.sourceRectangle;
+                emmissiveStrength = b.emmissiveStrength;
+                ID = b.ID;
+                dimensions = b.dimensions;
+                x = b.x;
+                y = b.y;
+            }
 
+            public void setLocation((int x, int y) location)
+            {
+                x = location.x;
+                y = location.y;
+            }
 
-
-        }
-    }
-    public class Block
-    {
-        public Rectangle sourceRectangle;
-        public int emmissiveStrength;
-        public int ID;
-        public List<Vector2> faceVertices;
-        public int x { get; set; }
-        public int y { get; set; }
-        public bool isBlockTransparent = false;
-        public (int width, int height) dimensions = (1, 1); //Default to 1 by 1 blocks
-        public Vector4 faceDirection;
-
-
-        public Block(Rectangle textureSourceRectangle, int ID)
-        {
-            this.sourceRectangle = textureSourceRectangle;
-            this.ID = ID;
-        }
-        public Block(Rectangle textureSourceRectangle, int emmissiveStrength, int ID)
-        {
-            this.sourceRectangle = textureSourceRectangle;
-            this.emmissiveStrength = emmissiveStrength;
-            this.ID = ID;
-        }
-        public Block(int ID)
-        {
-            this.ID = ID;
-        }
-
-        public Block(Block b)
-        {
-            sourceRectangle = b.sourceRectangle;
-            emmissiveStrength = b.emmissiveStrength;
-            ID = b.ID;
-            dimensions = b.dimensions;
-            x = b.x;
-            y = b.y;
-        }
-
-        public void setLocation((int x, int y) location)
-        {
-            x = location.x;
-            y = location.y;
-        }
-
-        //A block specific check if that block can be placed. For example, torches, chests etc.
-        public virtual bool canBlockBePlaced(WorldContext worldContext, (int x, int y) location)
-        {
-            return true;
-        }
-        public virtual void onBlockPlaced(WorldContext worldContext, (int x, int y) location)
-        {
-            setLocation(location);
-        }
+            //A block specific check if that block can be placed. For example, torches, chests etc.
+            public virtual bool canBlockBePlaced(WorldContext worldContext, (int x, int y) location)
+            {
+                return true;
+            }
+            public virtual void onBlockPlaced(WorldContext worldContext, (int x, int y) location)
+            {
+                setLocation(location);
+            }
         
-        public void blockDestroyed(Dictionary<(int x, int y), Block> exposedBlocks)
-        {
-            if (exposedBlocks.ContainsKey((x, y))) { exposedBlocks.Remove((x, y)); }
-        }
-
-        public virtual void setupInitialData(WorldContext worldContext, int[,] worldArray, (int x, int y) blockLocation)
-        {
-            x = blockLocation.x;
-            y = blockLocation.y;
-        }
-
-        public virtual void setupFaceVertices(Vector4 exposedFacesClockwise)
-        {
-            this.faceDirection = exposedFacesClockwise;
-            //2 Vector2s are needed to allow for all 4 directions to be accounted for. However, this isn't the cleanest code and should be later improved
-            faceVertices = new List<Vector2>();
-            if (exposedFacesClockwise.X == 1)
+            public void blockDestroyed(Dictionary<(int x, int y), Block> exposedBlocks)
             {
-                faceVertices.Add(new Vector2(x, y));
-                faceVertices.Add(new Vector2(x + dimensions.width, y));
+                if (exposedBlocks.ContainsKey((x, y))) { exposedBlocks.Remove((x, y)); }
             }
-            if (exposedFacesClockwise.Y == 1)
-            {
-                //Check if the vertex already exists from the previous if statement
-                if (!faceVertices.Contains(new Vector2(x + dimensions.width, y)))
-                {
 
+            public virtual void setupInitialData(WorldContext worldContext, int[,] worldArray, (int x, int y) blockLocation)
+            {
+                x = blockLocation.x;
+                y = blockLocation.y;
+            }
+
+            public virtual void setupFaceVertices(Vector4 exposedFacesClockwise)
+            {
+                this.faceDirection = exposedFacesClockwise;
+                //2 Vector2s are needed to allow for all 4 directions to be accounted for. However, this isn't the cleanest code and should be later improved
+                faceVertices = new List<Vector2>();
+                if (exposedFacesClockwise.X == 1)
+                {
+                    faceVertices.Add(new Vector2(x, y));
                     faceVertices.Add(new Vector2(x + dimensions.width, y));
                 }
-
-
-                faceVertices.Add(new Vector2(x + dimensions.width, y + dimensions.height));
-            }
-            if (exposedFacesClockwise.Z == 1)
-            {
-                if (!faceVertices.Contains(new Vector2(x + dimensions.width, y + dimensions.height)))
+                if (exposedFacesClockwise.Y == 1)
                 {
+                    //Check if the vertex already exists from the previous if statement
+                    if (!faceVertices.Contains(new Vector2(x + dimensions.width, y)))
+                    {
+
+                        faceVertices.Add(new Vector2(x + dimensions.width, y));
+                    }
+
+
                     faceVertices.Add(new Vector2(x + dimensions.width, y + dimensions.height));
                 }
-
-                faceVertices.Add(new Vector2(x, y + dimensions.height));
-            }
-            if (exposedFacesClockwise.W == 1)
-            {
-                if (!faceVertices.Contains(new Vector2(x, y + dimensions.height)))
+                if (exposedFacesClockwise.Z == 1)
                 {
+                    if (!faceVertices.Contains(new Vector2(x + dimensions.width, y + dimensions.height)))
+                    {
+                        faceVertices.Add(new Vector2(x + dimensions.width, y + dimensions.height));
+                    }
+
                     faceVertices.Add(new Vector2(x, y + dimensions.height));
                 }
+                if (exposedFacesClockwise.W == 1)
+                {
+                    if (!faceVertices.Contains(new Vector2(x, y + dimensions.height)))
+                    {
+                        faceVertices.Add(new Vector2(x, y + dimensions.height));
+                    }
 
-                faceVertices.Add(new Vector2(x, y));
+                    faceVertices.Add(new Vector2(x, y));
+                }
             }
-        }
 
-        public virtual void onCollisionWithPhysicsObject(PhysicsObject entity, PhysicsEngine physicsEngine, WorldContext wc)
-        {
-            Rectangle entityCollider = new Rectangle((int)entity.x, (int)entity.y, entity.collider.Width, entity.collider.Height);
-            Rectangle blockRect = new Rectangle(x * wc.pixelsPerBlock, y * wc.pixelsPerBlock, wc.pixelsPerBlock, wc.pixelsPerBlock);
-            Vector2 collisionNormal = physicsEngine.computeCollisionNormal(entityCollider, blockRect);
-            entity.hasCollided();
-
-            //If the signs are unequal on either the velocity or the acceleration then the forces should cancel as the resulting motion would be counteracted by the block
-            if (((Math.Sign(collisionNormal.Y) != Math.Sign(entity.velocityY) && entity.velocityY != 0) || (Math.Sign(collisionNormal.Y) != Math.Sign(entity.accelerationY) && entity.accelerationY != 0)) && collisionNormal.Y != 0)
+            public virtual void onCollisionWithPhysicsObject(PhysicsObject entity, PhysicsEngine physicsEngine, WorldContext wc)
             {
-                entity.velocityY -= (1 + entity.bounceCoefficient) * entity.velocityY;
-                entity.accelerationY -= entity.accelerationY;
+                Rectangle entityCollider = new Rectangle((int)entity.x, (int)entity.y, entity.collider.Width, entity.collider.Height);
+                Rectangle blockRect = new Rectangle(x * wc.pixelsPerBlock, y * wc.pixelsPerBlock, wc.pixelsPerBlock, wc.pixelsPerBlock);
+                Vector2 collisionNormal = physicsEngine.computeCollisionNormal(entityCollider, blockRect);
+                entity.hasCollided();
 
-                if (Math.Sign(collisionNormal.Y) > 0)
+                //If the signs are unequal on either the velocity or the acceleration then the forces should cancel as the resulting motion would be counteracted by the block
+                if (((Math.Sign(collisionNormal.Y) != Math.Sign(entity.velocityY) && entity.velocityY != 0) || (Math.Sign(collisionNormal.Y) != Math.Sign(entity.accelerationY) && entity.accelerationY != 0)) && collisionNormal.Y != 0)
                 {
-                    entity.isOnGround = true;
+                    entity.velocityY -= (1 + entity.bounceCoefficient) * entity.velocityY;
+                    entity.accelerationY -= entity.accelerationY;
+
+                    if (Math.Sign(collisionNormal.Y) > 0)
+                    {
+                        entity.isOnGround = true;
+                    }
+
+                    if (Math.Sign(collisionNormal.Y) > 0)
+                    {
+                        entity.y = blockRect.Y - entityCollider.Height + 1;
+                    }
+                    else
+                    {
+                        entity.y = blockRect.Bottom - 1;
+                    }
                 }
 
-                if (Math.Sign(collisionNormal.Y) > 0)
+                if (((Math.Sign(collisionNormal.X) != Math.Sign(entity.velocityX) && entity.velocityX != 0) || (Math.Sign(collisionNormal.X) != Math.Sign(entity.accelerationX) && entity.accelerationX != 0)) && collisionNormal.X != 0)
                 {
-                    entity.y = blockRect.Y - entityCollider.Height + 1;
+
+
+                    entity.velocityX -= (1 + entity.bounceCoefficient) * entity.velocityX;
+                    entity.accelerationX -= entity.accelerationX;
+
+                    if (Math.Sign(collisionNormal.X) > 0)
+                    {
+                        entity.x = blockRect.Right - 1;
+                    }
+                    else
+                    {
+                        entity.x = blockRect.Left - entityCollider.Width + 1;
+                    }
+
                 }
-                else
-                {
-                    entity.y = blockRect.Bottom - 1;
-                }
+
             }
 
-            if (((Math.Sign(collisionNormal.X) != Math.Sign(entity.velocityX) && entity.velocityX != 0) || (Math.Sign(collisionNormal.X) != Math.Sign(entity.accelerationX) && entity.accelerationX != 0)) && collisionNormal.X != 0)
+            public virtual Block copyBlock()
             {
-
-
-                entity.velocityX -= (1 + entity.bounceCoefficient) * entity.velocityX;
-                entity.accelerationX -= entity.accelerationX;
-
-                if (Math.Sign(collisionNormal.X) > 0)
-                {
-                    entity.x = blockRect.Right - 1;
-                }
-                else
-                {
-                    entity.x = blockRect.Left - entityCollider.Width + 1;
-                }
-
+                return new Block(this);
             }
-
         }
-
-        public virtual Block copyBlock()
-        {
-            return new Block(this);
-        }
-    }
 
     public class Sample {
         public double[,] state;
@@ -1391,9 +1434,11 @@ namespace AITesting
         NeuralNet offlineNeuralNet;
         public NeuralNet critic;
         
-        double learnRate = 0.003;
+        double learnRate = 0.000025;
         const double learningDecay = 0.9999;
         const double futureRewardDiscount = 0;
+
+        const double actorEntropyWeight = 0.5;
 
         double[] actionCosts = new double[]{0, 0, 0, 5};
         double leakyReluConstant = 0.01;
@@ -1419,6 +1464,7 @@ namespace AITesting
                 }
                 else {
                     n.activationFunction = outputFunction;
+                    n.entropyWeight = actorEntropyWeight;
                 }
                     nodeLayers[i - 1] = n;
             }
@@ -1574,22 +1620,43 @@ namespace AITesting
         }
 
         public double[,] logSoftmaxActivationFunction(double[,] matrix) {
-            double sum = 0;
+            //Find the max value to c-shift:
+            
+            
+            double maxValue = matrix[0,0];
+            for (int x = 0; x < matrix.GetLength(0); x++) {
+                for (int y = 0; y < matrix.GetLength(1); y++) {
+                    if (matrix[x, y] > maxValue) {
+                        maxValue = matrix[x, y];
+                    }
+                }
+            }
+            double sum = 0.00001;
             for (int x = 0; x < matrix.GetLength(0); x++)
             {
                 for (int y = 0; y < matrix.GetLength(1); y++)
                 {
-                    sum += Math.Exp(matrix[x, y]);
+                    if (matrix[x, y] - maxValue > -50)
+                    {
+                        sum += Math.Exp(matrix[x, y] - maxValue);
+                    }
                 }
             }
-            System.Diagnostics.Debug.WriteLine(sum);
             for (int x = 0; x < matrix.GetLength(0); x++)
             {
                 for (int y = 0; y < matrix.GetLength(1); y++)
                 {
                     if (sum != 0)
                     {
-                        matrix[x, y] = Math.Log(Math.Exp(matrix[x,y])/sum);
+                        if (matrix[x, y] - maxValue < -50) {
+                            matrix[x, y] = maxValue - 50;
+                        }
+                        matrix[x, y] = Math.Exp(matrix[x, y] - maxValue)/sum;
+
+                        if (matrix[x, y] > 1.5) { System.Diagnostics.Debug.WriteLine("Somehow"); }
+                    }
+                    else {
+                        System.Diagnostics.Debug.WriteLine("The sum was zeroed");
                     }
                 }
             }
@@ -1677,7 +1744,7 @@ namespace AITesting
                 double[,] expectedReward = new double[1, 1];
                 expectedReward[0, 0] = samples[i].rewardChange;
                 
-                critic.addCriticLossValue(samples[sampleCount - 2].state, expectedReward, era);
+                //critic.addCriticLossValue(samples[sampleCount - 2].state, expectedReward, era);
 
                 //Learning after every gradient descent instead of after each batch of samples.
                 learn(samples.Count);
@@ -1689,7 +1756,6 @@ namespace AITesting
             if (critic.criticLossDatapoints[era - 2].criticLoss > critic.maxLoss)
             {
                 critic.maxLoss = critic.criticLossDatapoints[era - 2].criticLoss;
-                System.Diagnostics.Debug.WriteLine(critic.maxLoss);
             }
 
 
@@ -1734,8 +1800,8 @@ namespace AITesting
             //calculate the expected output by passing in the sample's next state through the neural net:
 
             double[,] expectedNeuralNetOutput = null;
-            if (offlineNeuralNet != null) { expectedNeuralNetOutput = offlineNeuralNet.calculateNeuralNet(s.state); }
-            /*
+            //if (offlineNeuralNet != null) { expectedNeuralNetOutput = offlineNeuralNet.calculateNeuralNet(s.state); }
+            
             //Convert to a 1D array:
             //pass the sample's current position data to flush the inputs/outputs:
             //Compute the optimal reward through the bellman equation:
@@ -1761,10 +1827,11 @@ namespace AITesting
             else if (s.rewardChange < 0) {
                 s.rewardChange *= 2; //Really punish it
             }
-            //double optimalReward = (s.rewardChange - actionCosts[s.actionIndex]) + futureRewardDiscount * maxValue;
+            double optimalReward = s.rewardChange;
 
 
-            updateOnePath(optimalReward, s.actionIndex);*/
+            updateOnePath(optimalReward, s.actionIndex, false);
+            /*
 
 
             //PPO algorithm: r(0) = pi(current)/pi(old)
@@ -1813,20 +1880,20 @@ namespace AITesting
                         //Just meh the last action
                         updateOnePath(0.5, s.actionIndex, s.wasClipped);
                     }
-                }*/
+                }
 
                 
                 
             }
             else {
                 double[,] tempOutput = calculateNeuralNet(s.state);
-                double[,] expectedOutput = new double[1, 1];
-                expectedOutput[0,0] = discountedFutureReward[sampleIndex];
+                //double[,] expectedOutput = new double[1, 1];
+                //expectedOutput[0,0] = discountedFutureReward[sampleIndex];
                 //System.Diagnostics.Debug.WriteLine("Expected: " + expectedOutput[0,0]);
                 //System.Diagnostics.Debug.WriteLine("Actual: " + tempOutput[0,0]);
-                updateAllGradients(expectedOutput, false);
+                updateGradientsFromSample(expectedOutput, false);
             }
-
+            */
             //You don't update all the gradients: only the ones connected the the output that got chosen
         }
         public void updateOfflineNeuralNet() {
@@ -1924,6 +1991,9 @@ namespace AITesting
 
         public NodeLayerActivationFunction activationFunction;
         public NeuralNetCostFunction costFunction;
+
+        public double entropyWeight; //Recessive for everything except for advantage cost
+        public double entropy;
         
 
         double leakyReluConstant = 0.01;
@@ -1978,13 +2048,18 @@ namespace AITesting
         {
             if (costFunction == NeuralNetCostFunction.AdvantageCost)
             {
+
+                //Might have to reverse this value                
+                double entropyLoss = actual * (Math.Log(actual) + entropy);
+
+
                 if (wasSampleClipped)
                 {
-                    return 0;
+                    return entropyWeight * entropyLoss;
                 }
                 else
                 {
-                    return expected / actual ;
+                    return (expected / actual) + entropyWeight * entropyLoss;
                 }
             }
             else {
@@ -2042,15 +2117,15 @@ namespace AITesting
 
             //Because the input is log(pi),
             //We need to do e^log(pi) to just get pi;
-
+            
             for (int x = 0; x < matrix.GetLength(0); x++) {
                 for (int y = 0; y < matrix.GetLength(1); y++) {
                     if (x == y)
                     {
-                        matrix[x, y] = 1 - Math.Exp(matrix[x, y]);
+                        matrix[x, y] = 1 - matrix[x, y];
                     }
                     else {
-                        matrix[x, y] = -Math.Exp(matrix[x,y]);
+                        matrix[x, y] = -matrix[x,y];
                     }
                 }
             }
@@ -2064,19 +2139,27 @@ namespace AITesting
             double[,] nodeValues = new double[expected.GetLength(0), expected.GetLength(1)];
             if (costFunction == NeuralNetCostFunction.MeanSquaredError) {
                 //System.Diagnostics.Debug.WriteLine(output.GetLength(0) + ", " + output.GetLength(1));
-            }
-            for (int x = 0; x < nodeValues.GetLength(0); x++)
-            {
-                for (int y = 0; y < nodeValues.GetLength(1); y++)
-                {
-                    nodeValues[x, y] = individualCostDerivative(expected[x, y], output[x, y], wasSampleClipped);
+            } else if(costFunction == NeuralNetCostFunction.AdvantageCost) {
+                //Compute entropy
+                entropy = 0;
+                for (int x = 0; x < output.GetLength(0); x++) {
+                    for (int y = 0; y < output.GetLength(1); y++) {
+                        entropy += output[x, y] * Math.Log(output[x, y]);
+                    }
                 }
+                entropy *= -1;
             }
+                for (int x = 0; x < nodeValues.GetLength(0); x++)
+                {
+                    for (int y = 0; y < nodeValues.GetLength(1); y++)
+                    {
+                        nodeValues[x, y] = individualCostDerivative(expected[x, y], output[x, y], wasSampleClipped);
+                    }
+                }
 
             double[,] activationFunctionArray = new double[0,0];
             if (activationFunction == NodeLayerActivationFunction.sigmoid)
             {
-
                 activationFunctionArray = sigmoidActivationDerivative(weightedInput);
             }
             else if (activationFunction == NodeLayerActivationFunction.relu)
